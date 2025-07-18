@@ -59,7 +59,25 @@ func StreamHandler(c *gin.Context, resp *http.Response, relayMode int) (*model.E
 				// but for empty choice and no usage, we should not pass it to client, this is for azure
 				continue // just ignore empty choice
 			}
-			render.StringData(c, data)
+			
+			// Check if model redirection occurred and mask the model name
+			if modelRedirected, _ := c.Get("model_redirected"); modelRedirected == true {
+				if originalModel, exists := c.Get("original_model"); exists {
+					streamResponse.Model = originalModel.(string)
+					// Re-marshal the modified response
+					modifiedData, err := json.Marshal(streamResponse)
+					if err != nil {
+						logger.SysError("error marshalling modified stream response: " + err.Error())
+						render.StringData(c, data) // fallback to original data
+					} else {
+						render.StringData(c, dataPrefix+string(modifiedData))
+					}
+				} else {
+					render.StringData(c, data)
+				}
+			} else {
+				render.StringData(c, data)
+			}
 			for _, choice := range streamResponse.Choices {
 				responseText += conv.AsString(choice.Delta.Content)
 			}
@@ -116,8 +134,42 @@ func Handler(c *gin.Context, resp *http.Response, promptTokens int, modelName st
 			StatusCode: resp.StatusCode,
 		}, nil
 	}
-	// Reset response body
-	resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
+	
+	// Check if model redirection occurred and mask the model name in response body
+	if modelRedirected, _ := c.Get("model_redirected"); modelRedirected == true {
+		if originalModel, exists := c.Get("original_model"); exists {
+			// Parse response body as full TextResponse to access Model field
+			var fullTextResponse TextResponse
+			err = json.Unmarshal(responseBody, &fullTextResponse)
+			if err == nil && fullTextResponse.Model != "" {
+				// Mask the model name
+				fullTextResponse.Model = originalModel.(string)
+				// Re-marshal the modified response
+				modifiedResponseBody, err := json.Marshal(fullTextResponse)
+				if err != nil {
+					logger.SysError("error marshalling modified response: " + err.Error())
+					// Fallback to original response body
+					resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
+				} else {
+					responseBody = modifiedResponseBody
+					resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
+				}
+			} else {
+				// If failed to parse as TextResponse, try string replacement as fallback
+				responseStr := string(responseBody)
+				if targetModel, exists := c.Get("target_model"); exists {
+					modifiedResponseStr := strings.ReplaceAll(responseStr, `"model":"`+targetModel.(string)+`"`, `"model":"`+originalModel.(string)+`"`)
+					responseBody = []byte(modifiedResponseStr)
+				}
+				resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
+			}
+		} else {
+			resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
+		}
+	} else {
+		// Reset response body
+		resp.Body = io.NopCloser(bytes.NewBuffer(responseBody))
+	}
 
 	// We shouldn't set the header before we parse the response body, because the parse part may fail.
 	// And then we will have to send an error response, but in this case, the header has already been set.

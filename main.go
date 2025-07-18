@@ -91,6 +91,10 @@ func main() {
 	if config.EnableMetric {
 		logger.SysLog("metric enabled, will disable channel if too much request failed")
 	}
+	
+	// Start high load mode monitor
+	common.StartHighLoadMonitor()
+	
 	openai.InitTokenEncoders()
 	client.Init()
 

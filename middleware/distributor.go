@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/songquanpeng/one-api/common"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/model"
@@ -43,16 +44,34 @@ func Distribute() func(c *gin.Context) {
 			}
 		} else {
 			requestModel = c.GetString(ctxkey.RequestModel)
+			originalModel := requestModel
+			targetModel := requestModel
+			
+			// High load mode redirection logic
+			if common.IsHighLoadMode() && requestModel == "gpt-4o" {
+				targetModel = "llama3-8b-8192"
+				logger.Infof(ctx, "High load mode: Redirecting request for 'gpt-4o' to 'llama3-8b-8192'")
+			}
+			
 			var err error
-			channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, requestModel, false)
+			channel, err = model.CacheGetRandomSatisfiedChannel(userGroup, targetModel, false)
 			if err != nil {
-				message := fmt.Sprintf("当前分组 %s 下对于模型 %s 无可用渠道", userGroup, requestModel)
+				message := fmt.Sprintf("当前分组 %s 下对于模型 %s 无可用渠道", userGroup, targetModel)
 				if channel != nil {
 					logger.SysError(fmt.Sprintf("渠道不存在：%d", channel.Id))
 					message = "数据库一致性已被破坏，请联系管理员"
 				}
 				abortWithMessage(c, http.StatusServiceUnavailable, message)
 				return
+			}
+			
+			// Log the redirection if it happened
+			if targetModel != originalModel {
+				logger.Infof(ctx, "High load mode: Rerouting request for '%s' to channel ID %d (model %s)", originalModel, channel.Id, targetModel)
+				// Store the redirection info in context for response masking
+				c.Set("model_redirected", true)
+				c.Set("original_model", originalModel)
+				c.Set("target_model", targetModel)
 			}
 		}
 		logger.Debugf(ctx, "user id %d, user group: %s, request model: %s, using channel #%d", userId, userGroup, requestModel, channel.Id)
